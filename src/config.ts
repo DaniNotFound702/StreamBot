@@ -79,7 +79,11 @@ export default {
 	// yt-dlp options
 	ytdlpCookiesPath: process.env.YTDLP_COOKIES_PATH ? process.env.YTDLP_COOKIES_PATH : '',
 
-	// Stream options
+	// Jellyfin options
+	jellyfinServerUrl: process.env.JELLYFIN_SERVER_URL ? process.env.JELLYFIN_SERVER_URL : '',
+	jellyfinApiKey: process.env.JELLYFIN_API_KEY ? process.env.JELLYFIN_API_KEY : '',
+	jellyfinUsername: process.env.JELLYFIN_USERNAME ? process.env.JELLYFIN_USERNAME : '',
+	jellyfinPassword: process.env.JELLYFIN_PASSWORD ? process.env.JELLYFIN_PASSWORD : '',
 	respect_video_params: process.env.STREAM_RESPECT_VIDEO_PARAMS ? parseBoolean(process.env.STREAM_RESPECT_VIDEO_PARAMS) : false,
 	bitrateOverride: process.env.STREAM_BITRATE_OVERRIDE ? parseBoolean(process.env.STREAM_BITRATE_OVERRIDE) : false,
 	width: process.env.STREAM_WIDTH ? parseInt(process.env.STREAM_WIDTH) : 1280,

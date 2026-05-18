@@ -4,7 +4,9 @@ import fs from 'fs';
 import path from 'path';
 import logger from './utils/logger.js';
 import { downloadExecutable, checkForUpdatesAndUpdate } from './utils/yt-dlp.js';
+import WebSocket from 'ws';
 
+(global as any).WebSocket = WebSocket;
 // Import event handlers
 import { handleReady } from './events/client/ready.js';
 import { handleMessageCreate } from './events/messageCreate.js';

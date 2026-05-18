@@ -34,7 +34,8 @@
     "multer": "^2.1.1",
     "play-dl": "^1.9.7",
     "twitch-m3u8": "^1.1.5",
-    "winston": "^3.19.0"
+    "winston": "^3.19.0",
+    "ws": "^8.20.1"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",

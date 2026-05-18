@@ -175,11 +175,23 @@ export class StreamingService {
 	}
 
 	private async ensureVoiceConnection(guildId: string, channelId: string, title?: string): Promise<void> {
+		logger.info(`Ensuring voice connection to guild ${guildId}, channel ${channelId}`);
+		
 		// Only join voice if not already connected
 		if (!this.streamStatus.joined || !this.streamer.voiceConnection) {
-			await this.streamer.joinVoice(guildId, channelId);
-			this.streamStatus.joined = true;
+			logger.info(`Voice not connected yet, joining voice channel...`);
+			try {
+				await this.streamer.joinVoice(guildId, channelId);
+				this.streamStatus.joined = true;
+				logger.info(`Joined voice channel`);
+			} catch (error) {
+				logger.error(`Failed to join voice channel:`, error);
+				throw error;
+			}
+		} else {
+			logger.info(`Already connected to voice`);
 		}
+		
 		this.streamStatus.playing = true;
 		this.streamStatus.channelInfo = { guildId, channelId, cmdChannelId: config.cmdChannelId! };
 
@@ -187,13 +199,27 @@ export class StreamingService {
 			this.streamer.client.user?.setActivity(DiscordUtils.status_watch(title));
 		}
 
-		// Wait for voice connection to be fully ready
-		await new Promise(resolve => setTimeout(resolve, 2000));
+		// Wait for voice connection to be fully ready with retry logic
+		logger.info(`Waiting for voice connection to be ready...`);
+		let connectionReady = false;
+		for (let i = 0; i < 10; i++) {
+			await new Promise(resolve => setTimeout(resolve, 500));
+			if (this.streamer.voiceConnection) {
+				connectionReady = true;
+				logger.info(`Voice connection established on attempt ${i + 1}/10`);
+				break;
+			}
+			if (i % 2 === 0) {
+				logger.info(`Waiting for voice connection... attempt ${i + 1}/10`);
+			}
+		}
 
 		// Verify voice connection exists
-		if (!this.streamer.voiceConnection) {
+		if (!connectionReady || !this.streamer.voiceConnection) {
+			logger.error(`Voice connection is not established after wait`);
 			throw new Error('Voice connection is not established');
 		}
+		logger.info(`Voice connection verified and ready`);
 	}
 
 	private setupStreamConfiguration(videoParams?: { width: number, height: number, fps?: number, bitrate?: number }): any {
@@ -237,41 +263,67 @@ export class StreamingService {
 	}
 
 	private async executeStream(inputForFfmpeg: any, streamOpts: any, message: Message, title: string, videoSource: string): Promise<void> {
-		const { command, output: ffmpegOutput } = prepareStream(inputForFfmpeg, streamOpts, this.controller!.signal);
+		logger.info(`Creating stream with FFmpeg input: ${inputForFfmpeg}`);
+		logger.info(`Stream options: ${JSON.stringify(streamOpts)}`);
+		
+		try {
+			const { command, output: ffmpegOutput } = prepareStream(inputForFfmpeg, streamOpts, this.controller!.signal);
+			logger.info(`FFmpeg command created successfully`);
 
-		command.on("error", (err, stdout, stderr) => {
-			// Don't log error if it's due to manual stop
-			if (!this.streamStatus.manualStop && this.controller && !this.controller.signal.aborted) {
-				logger.error("An error happened with ffmpeg:", err.message);
-				if (stdout) {
-					logger.error("ffmpeg stdout:", stdout);
-				}
-				if (stderr) {
-					logger.error("ffmpeg stderr:", stderr);
-				}
-				this.controller.abort();
-			}
-		});
+			// Log the ffmpeg command being executed
+			logger.info(`FFmpeg command created with input: ${inputForFfmpeg}`);
 
-		await playStream(ffmpegOutput, this.streamer, undefined, this.controller!.signal)
-			.catch((err) => {
-				if (this.controller && !this.controller.signal.aborted) {
-					logger.error('playStream error:', err);
-					// Send error message to user
-					DiscordUtils.sendError(message, `Stream error: ${err.message || 'Unknown error'}`).catch(e =>
-						logger.error('Failed to send error message:', e)
-					);
-				}
-				if (this.controller && !this.controller.signal.aborted) this.controller.abort();
+			let commandStarted = false;
+			command.on("start", (cmdline) => {
+				commandStarted = true;
+				logger.info(`FFmpeg process started`);
+				logger.info(`FFmpeg command line: ${cmdline}`);
 			});
 
-		// Only log as finished if we didn't have an error and weren't manually stopped
-		if (this.controller && !this.controller.signal.aborted && !this.streamStatus.manualStop) {
-			logger.info(`Finished playing: ${title || videoSource}`);
-		} else if (this.streamStatus.manualStop) {
-			logger.info(`Stopped playing: ${title || videoSource}`);
-		} else {
-			logger.info(`Failed playing: ${title || videoSource}`);
+			command.on("error", (err, stdout, stderr) => {
+				logger.error(`FFmpeg error event fired`);
+				// Don't log error if it's due to manual stop
+				if (!this.streamStatus.manualStop && this.controller && !this.controller.signal.aborted) {
+					logger.error("An error happened with ffmpeg:", err.message);
+					if (stdout) {
+						logger.error("ffmpeg stdout:", stdout);
+					}
+					if (stderr) {
+						logger.error("ffmpeg stderr:", stderr);
+					}
+					this.controller.abort();
+				}
+			});
+
+			logger.info(`Starting playStream with ffmpegOutput...`);
+			const playStreamStartTime = Date.now();
+			
+			await playStream(ffmpegOutput, this.streamer, undefined, this.controller!.signal)
+				.catch((err) => {
+					logger.error(`playStream failed after ${Date.now() - playStreamStartTime}ms`);
+					if (this.controller && !this.controller.signal.aborted) {
+						logger.error('playStream error:', err);
+						// Send error message to user
+						DiscordUtils.sendError(message, `Stream error: ${err.message || 'Unknown error'}`).catch(e =>
+							logger.error('Failed to send error message:', e)
+						);
+					}
+					if (this.controller && !this.controller.signal.aborted) this.controller.abort();
+				});
+
+			logger.info(`playStream completed after ${Date.now() - playStreamStartTime}ms`);
+
+			// Only log as finished if we didn't have an error and weren't manually stopped
+			if (this.controller && !this.controller.signal.aborted && !this.streamStatus.manualStop) {
+				logger.info(`Finished playing: ${title || videoSource}`);
+			} else if (this.streamStatus.manualStop) {
+				logger.info(`Stopped playing: ${title || videoSource}`);
+			} else {
+				logger.info(`Failed playing: ${title || videoSource}`);
+			}
+		} catch (error) {
+			logger.error(`Unexpected error in executeStream:`, error);
+			throw error;
 		}
 	}
 

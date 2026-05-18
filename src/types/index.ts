@@ -302,7 +302,7 @@ export interface Command {
 export interface MediaSource {
  	url: string;
  	title: string;
- 	type: 'youtube' | 'twitch' | 'local' | 'url';
+ 	type: 'youtube' | 'twitch' | 'local' | 'url' | 'jellyfin';
  	isLive?: boolean;
 }
 

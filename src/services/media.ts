@@ -6,6 +6,7 @@ import { Youtube } from '../utils/youtube.js';
 import ytdl, { downloadToTempFile } from '../utils/yt-dlp.js';
 import { GeneralUtils } from '../utils/shared.js';
 import { YTResponse } from '../types/index.js';
+import jellyfin from '../utils/jellyfin.js';
 import path from 'path';
 
 export class MediaService {
@@ -21,6 +22,15 @@ export class MediaService {
 				return await this._resolveYouTubeSource(url);
 			} else if (url.includes('twitch.tv/')) {
 				return await this._resolveTwitchSource(url);
+			} else if (config.jellyfinServerUrl && (url.includes(config.jellyfinServerUrl) || url.includes('/web/index.html'))) {
+				logger.info(`Detected Jellyfin URL: ${url.substring(0, 100)}`);
+				const resolved = await this._resolveJellyfinSource(url);
+				if (resolved) {
+					logger.info(`Successfully resolved Jellyfin source to stream URL`);
+					return resolved;
+				} else {
+					logger.warn(`Failed to resolve Jellyfin source, falling back to direct URL`);
+				}
 			} else if (GeneralUtils.isLocalFile(url)) {
 				return this._resolveLocalSource(url);
 			} else if (GeneralUtils.isValidUrl(url)) {
@@ -109,6 +119,57 @@ export class MediaService {
 			};
 		}
 		return null;
+	}
+
+	private async _resolveJellyfinSource(url: string): Promise<MediaSource | null> {
+		try {
+			// Extract item ID from Jellyfin URL
+			// Format: https://jellyfin.daniisfound.ru/web/index.html#!/details?id=ITEMID
+			// or: https://jellyfin.daniisfound.ru/Videos/ITEMID/stream
+			let itemId: string | null = null;
+
+			if (url.includes('id=')) {
+				const idMatch = url.match(/id=([a-f0-9]+)/i);
+				itemId = idMatch ? idMatch[1] : null;
+			} else if (url.includes('/Videos/')) {
+				const idMatch = url.match(/\/Videos\/([a-f0-9]+)/i);
+				itemId = idMatch ? idMatch[1] : null;
+			}
+
+			if (!itemId) {
+				logger.error('Could not extract Jellyfin item ID from URL:', url);
+				return null;
+			}
+
+			logger.info(`Extracted Jellyfin item ID: ${itemId}`);
+
+			// Get item details
+			const item = await jellyfin.getItemDetails(itemId);
+			if (!item) {
+				logger.error(`Failed to get Jellyfin item details for ID: ${itemId}`);
+				return null;
+			}
+
+			logger.info(`Jellyfin item type: ${item.Type} (Name: ${item.Name})`);
+
+			// Get stream URL
+			const streamUrl = await jellyfin.getStreamUrl(itemId);
+			if (!streamUrl) {
+				logger.error(`Failed to get stream URL for Jellyfin item ${itemId} (Type: ${item.Type}). Item may not be directly playable.`);
+				return null;
+			}
+
+			logger.info(`Successfully resolved Jellyfin stream URL for ${item.Name}`);
+
+			return {
+				url: streamUrl,
+				title: item.Name,
+				type: 'jellyfin'
+			};
+		} catch (error) {
+			logger.error('Failed to resolve Jellyfin source:', error);
+			return null;
+		}
 	}
 
 	private _resolveLocalSource(url: string): MediaSource {
@@ -209,6 +270,35 @@ export class MediaService {
 		} catch (error) {
 			logger.error("Failed to search and play YouTube:", error);
 			return null;
+		}
+	}
+
+	public async searchJellyfin(query: string, limit: number = 10): Promise<Array<{ id: string; name: string; type: string; url?: string }>> {
+		try {
+			if (!jellyfin.isConfigured()) {
+				logger.warn('Jellyfin is not configured');
+				return [];
+			}
+
+			const items = await jellyfin.searchItems(query, limit);
+			
+			// Filter to only include playable types
+			const playableTypes = ['Movie', 'Episode', 'Audio', 'MusicVideo', 'Video'];
+			const playableItems = items.filter(item => playableTypes.includes(item.Type));
+			
+			if (playableItems.length === 0) {
+				logger.warn(`No playable items found in Jellyfin search for "${query}". Found ${items.length} total items but none were playable types.`);
+			}
+
+			return playableItems.map(item => ({
+				id: item.Id,
+				name: item.Name,
+				type: item.Type,
+				url: `${jellyfin.getServerUrl()}/web/index.html#!/details?id=${item.Id}`
+			}));
+		} catch (error) {
+			logger.error("Failed to search Jellyfin:", error);
+			return [];
 		}
 	}
 }
