@@ -20,17 +20,31 @@ export interface JellyfinSearchResult {
 	TotalRecordCount: number;
 }
 
+export interface MediaStream {
+	Type: string;
+	Codec: string;
+	IsDefault: boolean;
+	Language?: string;
+	DisplayTitle?: string;
+	Index?: number;
+	IsForced?: boolean;
+}
+
+export interface JellyfinMediaInfo {
+	Id: string;
+	Name: string;
+	VideoStreams: MediaStream[];
+	AudioStreams: MediaStream[];
+	SubtitleStreams: MediaStream[];
+}
+
 export interface JellyfinPlaybackInfo {
 	MediaSources: Array<{
 		Id: string;
 		Path?: string;
 		Protocol?: string;
 		Type: string;
-		MediaStreams: Array<{
-			Type: string;
-			Codec: string;
-			IsDefault: boolean;
-		}>;
+		MediaStreams: Array<MediaStream>;
 		TranscodingUrl?: string;
 		DirectStreamUrl?: string;
 	}>;
@@ -394,6 +408,54 @@ export class Jellyfin {
 
 	public getServerUrl(): string {
 		return config.jellyfinServerUrl;
+	}
+
+	public async getMediaInfo(itemId: string): Promise<JellyfinMediaInfo | null> {
+		try {
+			if (!this.userId) {
+				await this.authenticate();
+			}
+
+			if (!this.userId) {
+				logger.error('Not authenticated to Jellyfin');
+				return null;
+			}
+
+			// Get playback info with all media streams
+			const response = await this.client.post<JellyfinPlaybackInfo>('/Items/' + itemId + '/PlaybackInfo', {
+				UserId: this.userId,
+				IsPlayback: true,
+				AutoOpenLiveStream: true,
+			}, {
+				params: this.getRequestParams()
+			});
+
+			if (response.status === 200 && response.data.MediaSources && response.data.MediaSources.length > 0) {
+				const mediaSource = response.data.MediaSources[0];
+				const streams = mediaSource.MediaStreams || [];
+
+				// Get item details for the name
+				const itemResponse = await this.client.get<any>(`/Items/${itemId}`, {
+					params: {
+						...this.getRequestParams(),
+						userId: this.userId,
+					},
+				});
+
+				return {
+					Id: itemId,
+					Name: itemResponse.data?.Name || 'Unknown',
+					VideoStreams: streams.filter(s => s.Type === 'Video'),
+					AudioStreams: streams.filter(s => s.Type === 'Audio'),
+					SubtitleStreams: streams.filter(s => s.Type === 'Subtitle'),
+				};
+			}
+
+			return null;
+		} catch (error) {
+			logger.error('Failed to get Jellyfin media info:', error);
+			return null;
+		}
 	}
 }
 

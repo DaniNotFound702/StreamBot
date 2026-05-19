@@ -164,7 +164,8 @@ export class MediaService {
 			return {
 				url: streamUrl,
 				title: item.Name,
-				type: 'jellyfin'
+				type: 'jellyfin',
+				sourceId: itemId
 			};
 		} catch (error) {
 			logger.error('Failed to resolve Jellyfin source:', error);

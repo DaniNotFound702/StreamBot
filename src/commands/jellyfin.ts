@@ -4,6 +4,7 @@ import { MediaService } from "../services/media.js";
 import { ErrorUtils, DiscordUtils } from '../utils/shared.js';
 import jellyfin from '../utils/jellyfin.js';
 import logger from '../utils/logger.js';
+import { streamSelectionService } from "../services/streamSelection.js";
 
 export default class JellyfinCommand extends BaseCommand {
 	name = "jellyfin";
@@ -112,11 +113,45 @@ export default class JellyfinCommand extends BaseCommand {
 		}
 
 		try {
+			// Parse inline subs/audio parameters
+			// Example: "jellyfin play Movie Title subs 1 audio 2"
+			let subsIndex: number | null | undefined = undefined;
+			let audioIndex: number | undefined = undefined;
+			let queryArgs = [...args];
+
+			// Extract "subs" parameter
+			const subsIdx = queryArgs.findIndex(arg => arg.toLowerCase() === 'subs');
+			if (subsIdx !== -1 && subsIdx + 1 < queryArgs.length) {
+				const subsValue = queryArgs[subsIdx + 1].toLowerCase();
+				if (subsValue === 'off') {
+					subsIndex = null; // Explicitly disable subtitles
+					queryArgs = queryArgs.filter((_, i) => i !== subsIdx && i !== subsIdx + 1);
+				} else {
+					const subsNum = parseInt(queryArgs[subsIdx + 1], 10);
+					if (!isNaN(subsNum) && subsNum > 0) {
+						subsIndex = subsNum - 1; // Convert to 0-based
+						queryArgs = queryArgs.filter((_, i) => i !== subsIdx && i !== subsIdx + 1);
+						logger.info(`Parsed inline subs parameter: ${subsIndex}`);
+					}
+				}
+			}
+
+			// Extract "audio" or "dubs" parameter
+			const audioIdx = queryArgs.findIndex(arg => arg.toLowerCase() === 'audio' || arg.toLowerCase() === 'dubs');
+			if (audioIdx !== -1 && audioIdx + 1 < queryArgs.length) {
+				const audioNum = parseInt(queryArgs[audioIdx + 1], 10);
+				if (!isNaN(audioNum) && audioNum > 0) {
+					audioIndex = audioNum - 1; // Convert to 0-based
+					queryArgs = queryArgs.filter((_, i) => i !== audioIdx && i !== audioIdx + 1);
+					logger.info(`Parsed inline audio parameter: ${audioIndex}`);
+				}
+			}
+
 			const userId = context.message.author.id;
 			const lastResults = JellyfinCommand.lastSearchResults.get(userId);
 
 			// Check if first arg is a number (from previous search results)
-			const itemIndex = parseInt(args[0]) - 1;
+			const itemIndex = parseInt(queryArgs[0]) - 1;
 
 			if (!isNaN(itemIndex) && lastResults && itemIndex >= 0 && itemIndex < lastResults.length) {
 				// Play from last search results
@@ -127,6 +162,12 @@ export default class JellyfinCommand extends BaseCommand {
 				
 				if (success) {
 					await msg.edit(`✅ Added to queue: \`${item.name}\``);
+					
+					// Apply inline stream selections
+					if (subsIndex !== undefined || audioIndex !== undefined) {
+						await this.applyStreamSelections(item.id, userId, subsIndex, audioIndex);
+					}
+					
 					// If not currently playing, start playing from queue
 					if (!context.streamStatus.playing) {
 						await context.streamingService.playFromQueue(context.message);
@@ -134,7 +175,7 @@ export default class JellyfinCommand extends BaseCommand {
 				}
 			} else {
 				// Treat as new search query
-				const query = args.join(' ');
+				const query = queryArgs.join(' ');
 				const msg = await context.message.reply(`🔍 Searching Jellyfin for: \`${query}\`...`);
 
 				const results = await this.mediaService.searchJellyfin(query, 5);
@@ -150,6 +191,12 @@ export default class JellyfinCommand extends BaseCommand {
 				
 				if (success) {
 					await msg.edit(`✅ Playing from Jellyfin: \`${item.name}\``);
+					
+					// Apply inline stream selections
+					if (subsIndex !== undefined || audioIndex !== undefined) {
+						await this.applyStreamSelections(item.id, userId, subsIndex, audioIndex);
+					}
+					
 					// If not currently playing, start playing from queue
 					if (!context.streamStatus.playing) {
 						await context.streamingService.playFromQueue(context.message);
@@ -161,6 +208,49 @@ export default class JellyfinCommand extends BaseCommand {
 			}
 		} catch (error) {
 			await ErrorUtils.handleError(error, 'playing Jellyfin media', context.message);
+		}
+	}
+
+	private async applyStreamSelections(jellyfinItemId: string, userId: string, subsIndex?: number | null, audioIndex?: number): Promise<void> {
+		try {
+			if (subsIndex !== undefined) {
+				const mediaInfo = await jellyfin.getMediaInfo(jellyfinItemId);
+				if (!mediaInfo) {
+					logger.warn(`Could not get media info for ${jellyfinItemId}`);
+					return;
+				}
+
+				if (subsIndex === null) {
+					streamSelectionService.setSubtitle(userId, jellyfinItemId, null);
+					logger.info(`Applied subtitle: disabled`);
+				} else if (subsIndex >= 0 && subsIndex < mediaInfo.SubtitleStreams.length) {
+					const subtitle = mediaInfo.SubtitleStreams[subsIndex];
+					const language = subtitle.Language || 'Unknown';
+					streamSelectionService.setSubtitle(userId, jellyfinItemId, subsIndex);
+					logger.info(`Applied subtitle: ${language} (index ${subsIndex + 1})`);
+				} else {
+					logger.warn(`Invalid subtitle index ${subsIndex + 1}, max available: ${mediaInfo.SubtitleStreams.length}`);
+				}
+			}
+
+			if (audioIndex !== undefined) {
+				const mediaInfo = await jellyfin.getMediaInfo(jellyfinItemId);
+				if (!mediaInfo) {
+					logger.warn(`Could not get media info for ${jellyfinItemId}`);
+					return;
+				}
+
+				if (audioIndex >= 0 && audioIndex < mediaInfo.AudioStreams.length) {
+					const audio = mediaInfo.AudioStreams[audioIndex];
+					const language = audio.Language || 'Unknown';
+					streamSelectionService.setAudio(userId, jellyfinItemId, audioIndex);
+					logger.info(`Applied audio track: ${language} (index ${audioIndex + 1})`);
+				} else {
+					logger.warn(`Invalid audio index ${audioIndex + 1}, max available: ${mediaInfo.AudioStreams.length}`);
+				}
+			}
+		} catch (error) {
+			logger.error(`Error applying stream selections:`, error);
 		}
 	}
 
@@ -193,13 +283,24 @@ export default class JellyfinCommand extends BaseCommand {
 \`jellyfin <query>\` - Quick search (same as search)
 \`jellyfin play <number>\` - Play item from last search results
 \`jellyfin play <query>\` - Search and play the first result
+\`jellyfin play <query> subs <number>\` - Play with subtitle pre-selection
+\`jellyfin play <query> audio <number>\` - Play with audio track pre-selection
 \`jellyfin list\` - List all Jellyfin libraries
 \`jellyfin help\` - Show this help message
 
+**Media Control (for Jellyfin videos):**
+\`$subtitles\` - List available subtitles
+\`$subtitles <number>\` - Select a subtitle
+\`$subtitles off\` - Disable subtitles
+\`$audio\` - List available audio tracks
+\`$audio <number>\` - Select an audio track
+
 **Examples:**
 • \`jellyfin search movie\` - Search for "movie"
-\`jellyfin play 1\` - Play result #1 from last search
-• \`jellyfin play action movies\` - Search and auto-play first result`;
+• \`jellyfin play 1\` - Play result #1 from last search
+• \`jellyfin play Evangelion subs 1\` - Play with Japanese subtitles
+• \`jellyfin play Movie audio 2 subs 3\` - Play with audio #2 and subtitles #3
+• \`$subtitles\` - Show available subtitles for current video`;
 
 		await context.message.reply(helpText);
 	}

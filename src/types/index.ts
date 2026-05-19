@@ -300,26 +300,28 @@ export interface Command {
 }
 
 export interface MediaSource {
- 	url: string;
- 	title: string;
- 	type: 'youtube' | 'twitch' | 'local' | 'url' | 'jellyfin';
- 	isLive?: boolean;
+	url: string;
+	title: string;
+	type: 'youtube' | 'twitch' | 'local' | 'url' | 'jellyfin';
+	isLive?: boolean;
+	sourceId?: string;
 }
 
 export interface QueueItem {
-  	id: string;
-  	url: string;
-  	title: string;
-  	type: MediaSource['type'];
-  	isLive?: boolean;
-  	requestedBy: string;
-  	addedAt: Date;
-  	originalInput?: string;
-  	resolved?: boolean;
+	id: string;
+	url: string;
+	title: string;
+	type: MediaSource['type'];
+	isLive?: boolean;
+	requestedBy: string;
+	addedAt: Date;
+	originalInput?: string;
+	resolved?: boolean;
+	sourceId?: string;
 }
 
 export interface VideoQueue {
-  items: QueueItem[];
-  currentIndex: number;
-  isPlaying: boolean;
+	items: QueueItem[];
+	currentIndex: number;
+	isPlaying: boolean;
 }

@@ -8,6 +8,7 @@ import { getVideoParams } from "../utils/ffmpeg.js";
 import logger from '../utils/logger.js';
 import { DiscordUtils, ErrorUtils } from '../utils/shared.js';
 import { QueueItem, StreamStatus } from '../types/index.js';
+import { streamSelectionService } from './streamSelection.js';
 
 export class StreamingService {
  	private streamer: Streamer;
@@ -139,6 +140,27 @@ export class StreamingService {
 		// Ensure queue is marked as playing
 		this.queueService.setPlaying(true);
 
+		const userId = message.author.id;
+		const itemId = queueItem.sourceId;
+
+		// Log current stream selections for this user + item
+		if (itemId) {
+			const subtitle = streamSelectionService.getSubtitle(userId, itemId);
+			const audio = streamSelectionService.getAudio(userId, itemId);
+
+			if (subtitle !== undefined) {
+				if (subtitle === null) {
+					logger.info(`📌 Subtitles disabled for this video`);
+				} else {
+					logger.info(`📌 Using subtitle index ${subtitle} (subtitle ${subtitle + 1})`);
+				}
+			}
+
+			if (audio !== undefined) {
+				logger.info(`📌 Using audio index ${audio} (audio track ${audio + 1})`);
+			}
+		}
+
 		// Collect video parameters if respect_video_params is enabled
 		let videoParams = undefined;
 		if (config.respect_video_params) {
@@ -222,7 +244,7 @@ export class StreamingService {
 		logger.info(`Voice connection verified and ready`);
 	}
 
-	private setupStreamConfiguration(videoParams?: { width: number, height: number, fps?: number, bitrate?: number }): any {
+	private setupStreamConfiguration(videoParams?: { width: number, height: number, fps?: number, bitrate?: number }, userId?: string): any {
 		let width = videoParams?.width || config.width;
 		let height = videoParams?.height || config.height;
 		let frameRate = videoParams?.fps || config.fps;
@@ -249,7 +271,7 @@ export class StreamingService {
 			height = Math.round(height / 2) * 2;
 		}
 
-		return {
+		const streamOpts: any = {
 			width,
 			height,
 			frameRate,
@@ -260,10 +282,25 @@ export class StreamingService {
 			minimizeLatency: false,
 			h26xPreset: config.h26xPreset
 		};
+
+		return streamOpts;
 	}
 
 	private async executeStream(inputForFfmpeg: any, streamOpts: any, message: Message, title: string, videoSource: string): Promise<void> {
+		const userId = message.author.id;
+		
 		logger.info(`Creating stream with FFmpeg input: ${inputForFfmpeg}`);
+		
+		// Log which streams will be used
+		if (streamOpts.audioStreamIndex !== undefined) {
+			logger.info(`📌 Using audio stream index ${streamOpts.audioStreamIndex} (audio track ${streamOpts.audioStreamIndex + 1})`);
+		}
+		if (streamOpts.subtitleStreamIndex !== undefined && streamOpts.subtitleStreamIndex !== null) {
+			logger.info(`📌 Using subtitle stream index ${streamOpts.subtitleStreamIndex} (subtitle ${streamOpts.subtitleStreamIndex + 1})`);
+		} else if (streamOpts.subtitleStreamIndex === null) {
+			logger.info(`📌 Subtitles disabled`);
+		}
+		
 		logger.info(`Stream options: ${JSON.stringify(streamOpts)}`);
 		
 		try {
@@ -274,9 +311,22 @@ export class StreamingService {
 			logger.info(`FFmpeg command created with input: ${inputForFfmpeg}`);
 
 			let commandStarted = false;
+			let ffmpegCmdLine = '';
+			
 			command.on("start", (cmdline) => {
 				commandStarted = true;
-				logger.info(`FFmpeg process started`);
+				ffmpegCmdLine = cmdline;
+				
+				// Log stream selection info
+				let cmdLogInfo = `FFmpeg process started`;
+				if (streamOpts.audioStreamIndex !== undefined) {
+					cmdLogInfo += ` [audio stream ${streamOpts.audioStreamIndex}]`;
+				}
+				if (streamOpts.subtitleStreamIndex !== undefined) {
+					cmdLogInfo += ` [subtitle stream ${streamOpts.subtitleStreamIndex}]`;
+				}
+				logger.info(cmdLogInfo);
+				
 				logger.info(`FFmpeg command line: ${cmdline}`);
 			});
 
@@ -441,7 +491,8 @@ export class StreamingService {
 			await this.ensureVoiceConnection(guildId, channelId, title);
 			await DiscordUtils.sendPlaying(message, title || videoSource);
 
-			const streamOpts = this.setupStreamConfiguration(videoParams);
+			const userId = message.author.id;
+			const streamOpts = this.setupStreamConfiguration(videoParams, userId);
 			await this.executeStreamWorkflow(inputForFfmpeg, streamOpts, message, title || videoSource, videoSource);
 		} catch (error) {
 			await ErrorUtils.handleError(error, `playing video: ${title || videoSource}`);
