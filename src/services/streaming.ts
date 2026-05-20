@@ -23,6 +23,10 @@ export class StreamingService {
   private streamStartTime: number = 0;
   private pausedTimeMs: number = 0;
   private isPaused: boolean = false;
+  private currentCommand: any = null;
+
+  // Variabele om bij te houden of we midden in een spoorgewijzigde herstart zitten
+  private isSwitchingTracks: boolean = false;
 
   constructor(client: Client, streamStatus: StreamStatus) {
     this.streamer = new Streamer(client);
@@ -74,7 +78,6 @@ export class StreamingService {
       return false;
     }
   }
-
 
   public async playFromQueue(message: Message): Promise<void> {
     if (this.streamStatus.playing && !this.isPaused) {
@@ -144,15 +147,13 @@ export class StreamingService {
     }
 
     try {
-      // Bereken exact hoelang de video al speelde en sla dit op
       const elapsedMs = Date.now() - this.streamStartTime;
       this.pausedTimeMs += elapsedMs;
       this.isPaused = true;
       
-      // Stop de stream geforceerd (zonder de queue te clearen)
-      this.streamStatus.manualStop = true;
-      this.controller?.abort();
-      this.streamer.stopStream();
+      if (this.currentCommand) {
+        this.currentCommand.kill('SIGSTOP');
+      }
 
       await DiscordUtils.sendSuccess(message, '⏸️ De stream is gepauzeerd.');
     } catch (error) {
@@ -168,29 +169,69 @@ export class StreamingService {
     }
 
     try {
-      const currentItem = this.queueService.getCurrent();
-      if (!currentItem) {
-        await DiscordUtils.sendError(message, 'Kan niet hervatten: geen video in de wachtrij.');
-        return;
+      this.isPaused = false;
+      
+      if (this.currentCommand) {
+        this.currentCommand.kill('SIGCONT');
+        this.streamStartTime = Date.now();
       }
 
-      this.isPaused = false;
-      this.streamStatus.manualStop = false;
-      
-      await DiscordUtils.sendSuccess(message, '▶️ De stream wordt hervat...');
-      
-      // Speel de video af vanaf het exacte milliseconde waar we gebleven waren
-      await this.playVideoFromQueueItem(message, currentItem, this.pausedTimeMs);
+      await DiscordUtils.sendSuccess(message, '▶️ De stream is hervat.');
     } catch (error) {
       logger.error('Kon stream niet hervatten:', error);
       await DiscordUtils.sendError(message, 'Er ging iets mis bij het hervatten.');
     }
   }
 
+  // === NIEUWE DYNAMISCHE WISSEL FUNCTIE VOOR SUBS EN DUBS ===
+  public async switchTracksDynamic(message: Message): Promise<void> {
+    if (!this.streamStatus.playing) {
+      await DiscordUtils.sendError(message, 'Er speelt momenteel geen video om sporen voor te wijzigen.');
+      return;
+    }
+
+    const currentItem = this.queueService.getCurrent();
+    if (!currentItem) {
+      await DiscordUtils.sendError(message, 'Geen actieve video gevonden in de wachtrij.');
+      return;
+    }
+
+    try {
+      logger.info(`🔄 Dynamische track-wissel aangevraagd voor: ${currentItem.title}`);
+      
+      // 1. Bereken de verstreken tijd tot nu toe en voeg toe aan het totaal
+      const elapsedMs = Date.now() - this.streamStartTime;
+      this.pausedTimeMs += elapsedMs;
+      
+      // 2. Zet de wissel-vlag aan zodat finalizeStream de wachtrij niet sloopt
+      this.isSwitchingTracks = true;
+      this.streamStatus.manualStop = true;
+
+      // 3. Stop de huidige FFmpeg stream onmiddellijk
+      this.controller?.abort();
+      this.streamer.stopStream();
+
+      await DiscordUtils.sendInfo(message, 'Spoor Wijzigen', '🔄 Audio/Ondertiteling wordt live bijgewerkt, stream herstart over 1 seconde...');
+
+      // 4. Start direct de video opnieuw op de exact opgeslagen milliseconde
+      // De playVideoFromQueueItem zal automatisch de NIEUWE streamSelectionService indexen ophalen!
+      setTimeout(async () => {
+        this.streamStatus.manualStop = false;
+        this.isSwitchingTracks = false;
+        await this.playVideoFromQueueItem(message, currentItem, this.pausedTimeMs);
+      }, 1000);
+
+    } catch (error) {
+      this.isSwitchingTracks = false;
+      this.streamStatus.manualStop = false;
+      logger.error('Fout bij het dynamisch wisselen van sporen:', error);
+      await DiscordUtils.sendError(message, 'Er ging iets mis bij het live wisselen van de audiotracks/subs.');
+    }
+  }
+
   private async playVideoFromQueueItem(message: Message, queueItem: QueueItem, seekTimeMs: number = 0): Promise<void> {
     this.queueService.setPlaying(true);
 
-    // Als seekTime 0 is, betreft het een nieuwe video en resetten we de timer
     if (seekTimeMs === 0) {
       this.pausedTimeMs = 0; 
     }
@@ -198,20 +239,27 @@ export class StreamingService {
     const userId = message.author.id;
     const itemId = queueItem.sourceId;
 
+    let streamOpts: any = undefined;
+
     if (itemId) {
       const subtitle = streamSelectionService.getSubtitle(userId, itemId);
       const audio = streamSelectionService.getAudio(userId, itemId);
 
+      streamOpts = {};
+
       if (subtitle !== undefined) {
         if (subtitle === null) {
           logger.info(`📌 Subtitles disabled for this video`);
+          streamOpts.subtitleStreamIndex = null;
         } else {
           logger.info(`📌 Using subtitle index ${subtitle} (subtitle ${subtitle + 1})`);
+          streamOpts.subtitleStreamIndex = subtitle;
         }
       }
 
       if (audio !== undefined) {
         logger.info(`📌 Using audio index ${audio} (audio track ${audio + 1})`);
+        streamOpts.audioStreamIndex = audio;
       }
     }
 
@@ -222,8 +270,7 @@ export class StreamingService {
 
     logger.info(`Playing from queue: ${queueItem.title} (${queueItem.url})`);
 
-    // We geven seekTimeMs mee aan playVideo
-    await this.playVideo(message, queueItem.url, queueItem.title, videoParams, seekTimeMs);
+    await this.playVideo(message, queueItem.url, queueItem.title, videoParams, seekTimeMs, streamOpts);
   }
 
   private async getVideoParameters(videoUrl: string): Promise<{ width: number, height: number, fps?: number, bitrate?: number } | undefined> {
@@ -346,14 +393,16 @@ export class StreamingService {
     logger.info(`Stream options: ${JSON.stringify(streamOpts)}`);
     
     try {
-      // Maak de stream klaar via de wrapper
       const { command, output: ffmpegOutput } = prepareStream(inputForFfmpeg, streamOpts, this.controller!.signal);
       logger.info(`FFmpeg command created successfully`);
 
-      // === NATIVE INPUT SEEK TOEVOEGEN ===
+      this.currentCommand = command;
+
+      // Zorg dat we de tpad filter correct forceren zodat hij niet crasht tijdens pauzes
+      command.videoFilters(`scale=${streamOpts.width}:${streamOpts.height},tpad=stop=-1:stop_mode=clone`);
+
       if (seekTimeMs > 0) {
         const seekSeconds = seekTimeMs / 1000;
-        // fluent-ffmpeg staat toe om vlaggen vooraan de input toe te voegen:
         command.inputOptions(`-ss ${seekSeconds}`);
         logger.info(`✅ Succesvol -ss ${seekSeconds} toegevoegd aan de input opties`);
       }
@@ -371,8 +420,6 @@ export class StreamingService {
       });
 
       logger.info(`Starting playStream with ffmpegOutput...`);
-      
-      // Sla de starttijd op om de verstreken tijd te meten
       this.streamStartTime = Date.now();
       
       await playStream(ffmpegOutput, this.streamer, undefined, this.controller!.signal)
@@ -468,7 +515,8 @@ export class StreamingService {
   private async finalizeStream(message: Message, tempFile: string | null): Promise<void> {
     if (!this.streamStatus.manualStop && this.controller && !this.controller.signal.aborted) {
       await this.handleQueueAdvancement(message);
-    } else if (!this.isPaused) {
+    } else if (!this.isPaused && !this.isSwitchingTracks) {
+      // Als we niet gepauzeerd zijn én niet wisselen van track, mag de queue gereset worden
       this.queueService.setPlaying(false);
       this.queueService.resetCurrentIndex();
       await this.cleanupStreamStatus();
@@ -483,7 +531,7 @@ export class StreamingService {
     }
   }
 
-  public async playVideo(message: Message, videoSource: string, title?: string, videoParams?: { width: number, height: number, fps?: number, bitrate?: number }, seekTimeMs: number = 0): Promise<void> {
+  public async playVideo(message: Message, videoSource: string, title?: string, videoParams?: { width: number, height: number, fps?: number, bitrate?: number }, seekTimeMs: number = 0, trackOverrides?: any): Promise<void> {
     const [guildId, channelId] = [config.guildId, config.videoChannelId];
     this.streamStatus.manualStop = false;
 
@@ -501,12 +549,20 @@ export class StreamingService {
 
       await this.ensureVoiceConnection(guildId, channelId, title);
       
+      // Alleen sturen bij een écht nieuw begin
       if (seekTimeMs === 0) {
         await DiscordUtils.sendPlaying(message, title || videoSource);
       }
 
       const userId = message.author.id;
       const streamOpts = this.setupStreamConfiguration(videoParams, userId);
+      
+      // Voeg track overrides (audio/subs) samen met de standaard stream opties
+      if (trackOverrides) {
+        if (trackOverrides.audioStreamIndex !== undefined) streamOpts.audioStreamIndex = trackOverrides.audioStreamIndex;
+        if (trackOverrides.subtitleStreamIndex !== undefined) streamOpts.subtitleStreamIndex = trackOverrides.subtitleStreamIndex;
+      }
+
       await this.executeStreamWorkflow(inputForFfmpeg, streamOpts, message, title || videoSource, videoSource, seekTimeMs);
     } catch (error) {
       await ErrorUtils.handleError(error, `playing video: ${title || videoSource}`);
@@ -534,8 +590,10 @@ export class StreamingService {
       this.streamStatus.playing = false;
       this.streamStatus.manualStop = false;
       this.isPaused = false;
+      this.isSwitchingTracks = false;
       this.pausedTimeMs = 0;
       this.streamStartTime = 0;
+      this.currentCommand = null;
 
       this.streamStatus.channelInfo = {
         guildId: "",
