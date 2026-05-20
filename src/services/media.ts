@@ -16,7 +16,7 @@ export class MediaService {
 		this.youtube = new Youtube();
 	}
 
-	public async resolveMediaSource(url: string): Promise<MediaSource | null> {
+	public async resolveMediaSource(url: string, audioIndex?: number | null, subtitleIndex?: number | null, seekTimeMs?: number): Promise<MediaSource | null> {
 		try {
 			if (url.includes('youtube.com/') || url.includes('youtu.be/')) {
 				return await this._resolveYouTubeSource(url);
@@ -24,7 +24,8 @@ export class MediaService {
 				return await this._resolveTwitchSource(url);
 			} else if (config.jellyfinServerUrl && (url.includes(config.jellyfinServerUrl) || url.includes('/web/index.html'))) {
 				logger.info(`Detected Jellyfin URL: ${url.substring(0, 100)}`);
-				const resolved = await this._resolveJellyfinSource(url);
+				// Geef tracks en tijd door aan Jellyfin
+				const resolved = await this._resolveJellyfinSource(url, audioIndex, subtitleIndex, seekTimeMs);
 				if (resolved) {
 					logger.info(`Successfully resolved Jellyfin source to stream URL`);
 					return resolved;
@@ -121,11 +122,8 @@ export class MediaService {
 		return null;
 	}
 
-	private async _resolveJellyfinSource(url: string): Promise<MediaSource | null> {
+	private async _resolveJellyfinSource(url: string, audioIndex?: number | null, subtitleIndex?: number | null, seekTimeMs?: number): Promise<MediaSource | null> {
 		try {
-			// Extract item ID from Jellyfin URL
-			// Format: https://jellyfin.daniisfound.ru/web/index.html#!/details?id=ITEMID
-			// or: https://jellyfin.daniisfound.ru/Videos/ITEMID/stream
 			let itemId: string | null = null;
 
 			if (url.includes('id=')) {
@@ -141,25 +139,12 @@ export class MediaService {
 				return null;
 			}
 
-			logger.info(`Extracted Jellyfin item ID: ${itemId}`);
-
-			// Get item details
 			const item = await jellyfin.getItemDetails(itemId);
-			if (!item) {
-				logger.error(`Failed to get Jellyfin item details for ID: ${itemId}`);
-				return null;
-			}
+			if (!item) return null;
 
-			logger.info(`Jellyfin item type: ${item.Type} (Name: ${item.Name})`);
-
-			// Get stream URL
-			const streamUrl = await jellyfin.getStreamUrl(itemId);
-			if (!streamUrl) {
-				logger.error(`Failed to get stream URL for Jellyfin item ${itemId} (Type: ${item.Type}). Item may not be directly playable.`);
-				return null;
-			}
-
-			logger.info(`Successfully resolved Jellyfin stream URL for ${item.Name}`);
+			// Vraag de speciale transcoder URL op mét de ingestelde sporen en tijd
+			const streamUrl = await jellyfin.getStreamUrl(itemId, audioIndex, subtitleIndex, seekTimeMs);
+			if (!streamUrl) return null;
 
 			return {
 				url: streamUrl,

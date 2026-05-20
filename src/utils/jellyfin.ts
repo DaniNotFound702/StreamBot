@@ -291,7 +291,7 @@ export class Jellyfin {
 		}
 	}
 
-	public async getStreamUrl(itemId: string): Promise<string | null> {
+	public async getStreamUrl(itemId: string, audioIndex?: number | null, subtitleIndex?: number | null, seekTimeMs?: number): Promise<string | null> {
 		try {
 			if (!this.userId) {
 				await this.authenticate();
@@ -302,35 +302,30 @@ export class Jellyfin {
 				return null;
 			}
 
-			// Get playback info to determine streaming method
-			const response = await this.client.post<JellyfinPlaybackInfo>('/Items/' + itemId + '/PlaybackInfo', {
-				UserId: this.userId,
-				IsPlayback: true,
-				AutoOpenLiveStream: true,
-			}, {
-				params: this.getRequestParams()
-			});
-
-			if (response.status === 200 && response.data.MediaSources && response.data.MediaSources.length > 0) {
-				const mediaSource = response.data.MediaSources[0];
-
-				// Prefer direct stream if available
-				if (mediaSource.DirectStreamUrl) {
-					return config.jellyfinServerUrl + mediaSource.DirectStreamUrl + (config.jellyfinApiKey ? `?api_key=${config.jellyfinApiKey}` : '');
-				}
-
-				// Fall back to transcoding
-				if (mediaSource.TranscodingUrl) {
-					return config.jellyfinServerUrl + mediaSource.TranscodingUrl + (config.jellyfinApiKey ? `?api_key=${config.jellyfinApiKey}` : '');
-				}
-
-				// If neither is available, construct the URL
-				if (mediaSource.Path) {
-					return config.jellyfinServerUrl + `/Videos/${itemId}/stream?Static=true&MediaSourceId=${mediaSource.Id}&deviceId=${this.deviceId}&api_key=${config.jellyfinApiKey}`;
-				}
+			// Haal het token op (via apiKey of het ingelogde account)
+			const token = config.jellyfinApiKey || this.client.defaults.headers['X-MediaBrowser-Token'] || '';
+			const baseUrl = (this.client.defaults.baseURL || config.jellyfinServerUrl).replace(/\/$/, '');
+			
+			// Gebruik het Universal endpoint: Jellyfin fixt de audio, subs én seeking voor ons!
+			let url = `${baseUrl}/Videos/${itemId}/universal?UserId=${this.userId}&DeviceId=${this.deviceId}&api_key=${token}&Container=ts&VideoCodec=h264&AudioCodec=opus,aac,mp3&MaxStreamingBitrate=140000000`;
+			
+			if (audioIndex !== undefined && audioIndex !== null) {
+				url += `&AudioStreamIndex=${audioIndex}`;
+			}
+			
+			if (subtitleIndex !== undefined && subtitleIndex !== null) {
+				url += `&SubtitleStreamIndex=${subtitleIndex}&SubtitleMethod=Encode`; // Brand de subs in!
+			} else {
+				url += `&SubtitleMethod=None`;
+			}
+			
+			if (seekTimeMs !== undefined && seekTimeMs > 0) {
+				const ticks = Math.floor(seekTimeMs * 10000); // Jellyfin gebruikt Ticks (1 ms = 10000 ticks)
+				url += `&StartTimeTicks=${ticks}`;
 			}
 
-			return null;
+			logger.info(`✅ Generated Jellyfin Universal URL: ${url}`);
+			return url;
 		} catch (error) {
 			logger.error('Failed to get Jellyfin stream URL:', error);
 			return null;

@@ -8,8 +8,10 @@ import logger from '../utils/logger.js';
 export interface StreamSelection {
 	userId: string;
 	itemId: string;
-	subtitleIndex?: number | null; // null = disabled, undefined = not set
-	audioIndex?: number; // 0-based index
+	subtitleIndex?: number | null; // Actual Jellyfin subtitle stream index, null = disabled, undefined = not set
+	subtitlePosition?: number | null; // Position among subtitle streams in the displayed list
+	audioIndex?: number; // Actual Jellyfin audio stream index
+	audioPosition?: number | null; // Position among audio streams in the displayed list
 	timestamp: number;
 }
 
@@ -41,11 +43,12 @@ class StreamSelectionService {
 	/**
 	 * Set subtitle selection for user on item
 	 */
-	setSubtitle(userId: string, itemId: string, subtitleIndex: number | null): void {
+	setSubtitle(userId: string, itemId: string, subtitleIndex: number | null, subtitlePosition: number | null = null): void {
 		const selection = this.getOrCreateSelection(userId, itemId);
 		selection.subtitleIndex = subtitleIndex;
+		selection.subtitlePosition = subtitlePosition;
 		selection.timestamp = Date.now();
-		logger.info(`[StreamSelection] User ${userId} set subtitle ${subtitleIndex === null ? 'disabled' : `index ${subtitleIndex}`} for item ${itemId}`);
+		logger.info(`[StreamSelection] User ${userId} set subtitle ${subtitleIndex === null ? 'disabled' : `index ${subtitleIndex}`} position ${subtitlePosition === null ? 'none' : subtitlePosition} for item ${itemId}`);
 	}
 
 	/**
@@ -56,14 +59,20 @@ class StreamSelectionService {
 		return this.selections.get(key)?.subtitleIndex;
 	}
 
+	getSubtitlePosition(userId: string, itemId: string): number | null | undefined {
+		const key = this.getKey(userId, itemId);
+		return this.selections.get(key)?.subtitlePosition;
+	}
+
 	/**
 	 * Set audio selection for user on item
 	 */
-	setAudio(userId: string, itemId: string, audioIndex: number): void {
+	setAudio(userId: string, itemId: string, audioIndex: number, audioPosition: number | null = null): void {
 		const selection = this.getOrCreateSelection(userId, itemId);
 		selection.audioIndex = audioIndex;
+		selection.audioPosition = audioPosition;
 		selection.timestamp = Date.now();
-		logger.info(`[StreamSelection] User ${userId} set audio index ${audioIndex} for item ${itemId}`);
+		logger.info(`[StreamSelection] User ${userId} set audio index ${audioIndex} position ${audioPosition === null ? 'none' : audioPosition} for item ${itemId}`);
 	}
 
 	/**
@@ -72,6 +81,11 @@ class StreamSelectionService {
 	getAudio(userId: string, itemId: string): number | undefined {
 		const key = this.getKey(userId, itemId);
 		return this.selections.get(key)?.audioIndex;
+	}
+
+	getAudioPosition(userId: string, itemId: string): number | null | undefined {
+		const key = this.getKey(userId, itemId);
+		return this.selections.get(key)?.audioPosition;
 	}
 
 	/**

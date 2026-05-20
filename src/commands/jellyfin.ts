@@ -226,8 +226,9 @@ export default class JellyfinCommand extends BaseCommand {
 				} else if (subsIndex >= 0 && subsIndex < mediaInfo.SubtitleStreams.length) {
 					const subtitle = mediaInfo.SubtitleStreams[subsIndex];
 					const language = subtitle.Language || 'Unknown';
-					streamSelectionService.setSubtitle(userId, jellyfinItemId, subsIndex);
-					logger.info(`Applied subtitle: ${language} (index ${subsIndex + 1})`);
+					const subtitleStreamIndex = subtitle.Index ?? subsIndex;
+					streamSelectionService.setSubtitle(userId, jellyfinItemId, subtitleStreamIndex);
+					logger.info(`Applied subtitle: ${language} (stream index ${subtitleStreamIndex})`);
 				} else {
 					logger.warn(`Invalid subtitle index ${subsIndex + 1}, max available: ${mediaInfo.SubtitleStreams.length}`);
 				}
@@ -243,8 +244,9 @@ export default class JellyfinCommand extends BaseCommand {
 				if (audioIndex >= 0 && audioIndex < mediaInfo.AudioStreams.length) {
 					const audio = mediaInfo.AudioStreams[audioIndex];
 					const language = audio.Language || 'Unknown';
-					streamSelectionService.setAudio(userId, jellyfinItemId, audioIndex);
-					logger.info(`Applied audio track: ${language} (index ${audioIndex + 1})`);
+					const audioStreamIndex = audio.Index ?? audioIndex;
+					streamSelectionService.setAudio(userId, jellyfinItemId, audioStreamIndex);
+					logger.info(`Applied audio track: ${language} (stream index ${audioStreamIndex})`);
 				} else {
 					logger.warn(`Invalid audio index ${audioIndex + 1}, max available: ${mediaInfo.AudioStreams.length}`);
 				}

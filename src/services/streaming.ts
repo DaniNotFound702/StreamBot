@@ -493,8 +493,13 @@ export class StreamingService {
     }
   }
 
-  private async prepareVideoSource(message: Message, videoSource: string, title?: string): Promise<{ inputForFfmpeg: any, tempFilePath: string | null }> {
-    const mediaSource = await this.mediaService.resolveMediaSource(videoSource);
+  private async prepareVideoSource(message: Message, videoSource: string, title?: string, seekTimeMs: number = 0, trackOverrides?: any): Promise<{ inputForFfmpeg: any, tempFilePath: string | null }> {
+    const mediaSource = await this.mediaService.resolveMediaSource(
+      videoSource,
+      trackOverrides?.audioStreamIndex,
+      trackOverrides?.subtitleStreamIndex,
+      seekTimeMs
+    );
 
     if (mediaSource && mediaSource.type === 'youtube' && !mediaSource.isLive) {
       const tempFilePath = await this.handleDownload(message, videoSource, title);
@@ -544,7 +549,7 @@ export class StreamingService {
 
     let tempFile: string | null = null;
     try {
-      const { inputForFfmpeg, tempFilePath } = await this.prepareVideoSource(message, videoSource, title);
+      const { inputForFfmpeg, tempFilePath } = await this.prepareVideoSource(message, videoSource, title, seekTimeMs, trackOverrides);
       tempFile = tempFilePath;
 
       await this.ensureVoiceConnection(guildId, channelId, title);
